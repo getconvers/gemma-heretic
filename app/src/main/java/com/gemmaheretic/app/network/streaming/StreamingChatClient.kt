@@ -28,6 +28,7 @@ class StreamingChatClient {
         }
     }
 
+    // Default Gson omits null fields — Ollama uses its own defaults
     private val gson = Gson()
 
     data class StreamResult(

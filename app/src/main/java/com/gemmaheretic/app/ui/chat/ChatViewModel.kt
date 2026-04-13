@@ -191,15 +191,12 @@ class ChatViewModel(
             chatRepository.touchSession(sessionId)
 
             val allMessages = chatRepository.getMessagesOnce(sessionId)
-            generateResponse(allMessages)
-
-            if (!titleGenerated && allMessages.size <= 1) {
-                generateTitle(text)
-            }
+            val shouldTitle = !titleGenerated && allMessages.size <= 1
+            generateResponse(allMessages, if (shouldTitle) text else null)
         }
     }
 
-    private fun generateResponse(messages: List<ChatMessage>) {
+    private fun generateResponse(messages: List<ChatMessage>, titleSource: String? = null) {
         val session = _uiState.value.session ?: return
         val endpoint = _uiState.value.endpoint ?: return
 
@@ -214,7 +211,14 @@ class ChatViewModel(
             }
         }
 
-        val options = OllamaOptions(
+        // Only include options if at least one is set — avoids sending
+        // an empty options object that could confuse Ollama
+        val hasOptions = listOf(
+            session.temperature, session.topP, session.topK,
+            session.numCtx, session.maxTokens, session.repeatPenalty, session.seed
+        ).any { it != null }
+
+        val options = if (hasOptions) OllamaOptions(
             temperature = session.temperature,
             topP = session.topP,
             topK = session.topK,
@@ -222,7 +226,7 @@ class ChatViewModel(
             numPredict = session.maxTokens,
             repeatPenalty = session.repeatPenalty,
             seed = session.seed
-        )
+        ) else null
 
         val request = OllamaChatRequest(
             model = session.modelName,
@@ -274,6 +278,11 @@ class ChatViewModel(
                     it.copy(streamState = StreamState.Complete, currentStreamContent = "")
                 }
                 chatRepository.touchSession(sessionId)
+
+                // Generate title AFTER response completes — never concurrent
+                if (titleSource != null) {
+                    generateTitle(titleSource)
+                }
 
             } catch (e: Exception) {
                 // Save partial content on error
