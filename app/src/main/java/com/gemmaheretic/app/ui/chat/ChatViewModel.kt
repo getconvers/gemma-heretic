@@ -1,5 +1,6 @@
 package com.gemmaheretic.app.ui.chat
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -259,15 +260,32 @@ class ChatViewModel(
                     )
                 }
 
+                // Log server-side metrics for performance diagnostics
+                val tps = result.tokensPerSecond
+                Log.i("GemmaPerf", buildString {
+                    append("=== Ollama Metrics ===")
+                    result.loadDuration?.let { append(" load=${it/1_000_000}ms") }
+                    result.promptEvalCount?.let { append(" prompt_tokens=$it") }
+                    result.promptEvalDuration?.let { append(" prompt_eval=${it/1_000_000}ms") }
+                    result.evalCount?.let { append(" eval_tokens=$it") }
+                    result.evalDuration?.let { append(" eval=${it/1_000_000}ms") }
+                    result.totalDuration?.let { append(" total=${it/1_000_000}ms") }
+                    tps?.let { append(" tokens/sec=${"%.1f".format(it)}") }
+                })
+
                 // Final flush — show any tokens buffered since last emit
                 val finalContent = contentBuilder.toString()
+                // Use server-side eval_duration when available (more accurate
+                // than client wall-clock for diagnosing CPU throttling)
+                val durationMs = result.evalDuration?.let { it / 1_000_000 }
+                    ?: (System.currentTimeMillis() - startTime)
                 if (finalContent.isNotEmpty()) {
                     chatRepository.addMessage(
                         ChatMessage(
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT,
                             content = finalContent,
-                            durationMs = System.currentTimeMillis() - startTime,
+                            durationMs = durationMs,
                             tokenCount = result.evalCount
                         )
                     )

@@ -33,8 +33,21 @@ class StreamingChatClient {
 
     data class StreamResult(
         val totalDuration: Long? = null,
-        val evalCount: Int? = null
-    )
+        val evalCount: Int? = null,
+        val evalDuration: Long? = null,
+        val promptEvalCount: Int? = null,
+        val promptEvalDuration: Long? = null,
+        val loadDuration: Long? = null
+    ) {
+        /** Server-side generation speed: eval_count / eval_duration (nanoseconds) */
+        val tokensPerSecond: Double?
+            get() {
+                val count = evalCount ?: return null
+                val dur = evalDuration ?: return null
+                if (dur <= 0) return null
+                return count.toDouble() / dur * 1_000_000_000.0
+            }
+    }
 
     /**
      * Streams chat directly, calling onToken for each token and returning
@@ -70,6 +83,10 @@ class StreamingChatClient {
         val responseBody = response.body ?: throw IOException("Empty response body")
         var evalCount: Int? = null
         var totalDuration: Long? = null
+        var evalDuration: Long? = null
+        var promptEvalCount: Int? = null
+        var promptEvalDuration: Long? = null
+        var loadDuration: Long? = null
 
         try {
             // Use Okio BufferedSource directly — no InputStream/Reader wrapping
@@ -80,10 +97,13 @@ class StreamingChatClient {
 
                 // Check for done FIRST (avoids unnecessary content extraction)
                 if (line.contains("\"done\":true")) {
-                    // Parse final stats with Gson only once at the end
                     try {
                         evalCount = extractInt(line, "\"eval_count\":")
                         totalDuration = extractLong(line, "\"total_duration\":")
+                        evalDuration = extractLong(line, "\"eval_duration\":")
+                        promptEvalCount = extractInt(line, "\"prompt_eval_count\":")
+                        promptEvalDuration = extractLong(line, "\"prompt_eval_duration\":")
+                        loadDuration = extractLong(line, "\"load_duration\":")
                     } catch (_: Exception) {}
                     break
                 }
@@ -98,7 +118,14 @@ class StreamingChatClient {
             responseBody.close()
         }
 
-        return StreamResult(totalDuration = totalDuration, evalCount = evalCount)
+        return StreamResult(
+            totalDuration = totalDuration,
+            evalCount = evalCount,
+            evalDuration = evalDuration,
+            promptEvalCount = promptEvalCount,
+            promptEvalDuration = promptEvalDuration,
+            loadDuration = loadDuration
+        )
     }
 
     fun cancelAll() {

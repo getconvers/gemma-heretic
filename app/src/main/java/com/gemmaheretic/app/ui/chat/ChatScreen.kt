@@ -414,26 +414,29 @@ private fun MessageBubble(
                 }
             }
 
-            // Duration info
-            message.durationMs?.let { duration ->
-                val seconds = duration / 1000.0
+            // Performance stats: duration, tokens, tokens/sec
+            if (message.durationMs != null && message.tokenCount != null) {
+                val seconds = message.durationMs / 1000.0
+                val tps = if (seconds > 0) message.tokenCount / seconds else 0.0
                 Text(
-                    text = "${String.format("%.1f", seconds)}s",
+                    text = "${String.format("%.1f", seconds)}s · ${message.tokenCount}t · ${String.format("%.1f", tps)} t/s",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                     modifier = Modifier
                         .align(Alignment.CenterVertically)
                         .padding(start = 4.dp)
                 )
-            }
-
-            message.tokenCount?.let { count ->
-                Text(
-                    text = "${count}t",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.align(Alignment.CenterVertically)
-                )
+            } else {
+                message.durationMs?.let { duration ->
+                    Text(
+                        text = "${String.format("%.1f", duration / 1000.0)}s",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier
+                            .align(Alignment.CenterVertically)
+                            .padding(start = 4.dp)
+                    )
+                }
             }
         }
     }
