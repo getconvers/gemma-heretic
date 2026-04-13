@@ -10,10 +10,12 @@ import com.gemmaheretic.app.domain.model.*
 import com.gemmaheretic.app.network.api.OllamaChatMessage
 import com.gemmaheretic.app.network.api.OllamaChatRequest
 import com.gemmaheretic.app.network.api.OllamaOptions
-import com.gemmaheretic.app.network.streaming.StreamEvent
+import com.gemmaheretic.app.network.streaming.StreamingChatClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class ChatUiState(
     val session: ChatSession? = null,
@@ -40,6 +42,7 @@ class ChatViewModel(
 
     private var streamJob: Job? = null
     private var titleGenerated = false
+    private val streamingClient = StreamingChatClient()
 
     init {
         loadSession()
@@ -87,7 +90,6 @@ class ChatViewModel(
 
     fun editAndResend(messageId: Long, newContent: String) {
         viewModelScope.launch {
-            // Find the message and delete it and everything after
             val messages = _uiState.value.messages
             val targetMsg = messages.find { it.id == messageId } ?: return@launch
 
@@ -101,13 +103,11 @@ class ChatViewModel(
             val messages = _uiState.value.messages
             if (messages.isEmpty()) return@launch
 
-            // Remove last assistant message if present
             val lastMsg = messages.last()
             if (lastMsg.role == MessageRole.ASSISTANT) {
                 chatRepository.deleteMessage(lastMsg.id)
             }
 
-            // Re-send with existing context
             val currentMessages = chatRepository.getMessagesOnce(sessionId)
             if (currentMessages.isNotEmpty()) {
                 generateResponse(currentMessages)
@@ -117,9 +117,9 @@ class ChatViewModel(
 
     fun stopGeneration() {
         streamJob?.cancel()
+        streamingClient.cancelAll()
         streamJob = null
         viewModelScope.launch {
-            // Save whatever was streamed so far
             val content = _uiState.value.currentStreamContent
             if (content.isNotEmpty()) {
                 chatRepository.addMessage(
@@ -193,7 +193,6 @@ class ChatViewModel(
             val allMessages = chatRepository.getMessagesOnce(sessionId)
             generateResponse(allMessages)
 
-            // Auto-title after first user message
             if (!titleGenerated && allMessages.size <= 1) {
                 generateTitle(text)
             }
@@ -241,45 +240,59 @@ class ChatViewModel(
             val contentBuilder = StringBuilder()
             var lastEmitTime = 0L
 
-            chatRepository.streamChat(endpoint.url, request).collect { event ->
-                when (event) {
-                    is StreamEvent.Token -> {
-                        contentBuilder.append(event.text)
-                        // Throttle UI updates to ~30fps to avoid excessive recomposition
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitTime > 33) {
-                            _uiState.update { it.copy(currentStreamContent = contentBuilder.toString()) }
-                            lastEmitTime = now
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    streamingClient.streamBlocking(
+                        baseUrl = endpoint.url,
+                        request = request,
+                        onToken = { token ->
+                            contentBuilder.append(token)
+                            val now = System.currentTimeMillis()
+                            if (now - lastEmitTime > 40) {
+                                val snapshot = contentBuilder.toString()
+                                _uiState.update { it.copy(currentStreamContent = snapshot) }
+                                lastEmitTime = now
+                            }
                         }
-                    }
-                    is StreamEvent.Done -> {
-                        val duration = System.currentTimeMillis() - startTime
-                        val finalContent = contentBuilder.toString()
-                        if (finalContent.isNotEmpty()) {
-                            chatRepository.addMessage(
-                                ChatMessage(
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = finalContent,
-                                    durationMs = duration,
-                                    tokenCount = event.response.evalCount
-                                )
-                            )
-                        }
-                        _uiState.update {
-                            it.copy(streamState = StreamState.Complete, currentStreamContent = "")
-                        }
-                        chatRepository.touchSession(sessionId)
-                    }
-                    is StreamEvent.Error -> {
-                        _uiState.update {
-                            it.copy(
-                                streamState = StreamState.Error(event.message),
-                                error = event.message,
-                                currentStreamContent = ""
-                            )
-                        }
-                    }
+                    )
+                }
+
+                // Final flush — show any tokens buffered since last emit
+                val finalContent = contentBuilder.toString()
+                if (finalContent.isNotEmpty()) {
+                    chatRepository.addMessage(
+                        ChatMessage(
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = finalContent,
+                            durationMs = System.currentTimeMillis() - startTime,
+                            tokenCount = result.evalCount
+                        )
+                    )
+                }
+                _uiState.update {
+                    it.copy(streamState = StreamState.Complete, currentStreamContent = "")
+                }
+                chatRepository.touchSession(sessionId)
+
+            } catch (e: Exception) {
+                // Save partial content on error
+                val partial = contentBuilder.toString()
+                if (partial.isNotEmpty()) {
+                    chatRepository.addMessage(
+                        ChatMessage(
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = partial
+                        )
+                    )
+                }
+                _uiState.update {
+                    it.copy(
+                        streamState = StreamState.Error(e.message ?: "Unknown error"),
+                        error = e.message,
+                        currentStreamContent = ""
+                    )
                 }
             }
         }

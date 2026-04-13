@@ -1,37 +1,53 @@
 package com.gemmaheretic.app.network.streaming
 
 import com.gemmaheretic.app.network.api.OllamaChatRequest
-import com.gemmaheretic.app.network.api.OllamaChatResponse
 import com.google.gson.Gson
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.BufferedReader
 import java.io.IOException
-import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
-class StreamingChatClient(
-    private val connectTimeoutSeconds: Int = 10,
-    private val readTimeoutSeconds: Int = 120
-) {
+/**
+ * Lightweight streaming client that reads tokens directly via Okio.
+ * No callbackFlow, no Gson per-token, no BufferedReader wrapping.
+ */
+class StreamingChatClient {
+
+    companion object {
+        // Shared client — reuses connection pool and threads across all requests
+        private var sharedClient: OkHttpClient? = null
+
+        fun getClient(connectTimeout: Int = 10, readTimeout: Int = 120): OkHttpClient {
+            return sharedClient ?: OkHttpClient.Builder()
+                .connectTimeout(connectTimeout.toLong(), TimeUnit.SECONDS)
+                .readTimeout(readTimeout.toLong(), TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build()
+                .also { sharedClient = it }
+        }
+    }
+
     private val gson = Gson()
 
-    fun streamChat(
-        baseUrl: String,
-        request: OllamaChatRequest
-    ): Flow<StreamEvent> = callbackFlow {
-        val client = OkHttpClient.Builder()
-            .connectTimeout(connectTimeoutSeconds.toLong(), TimeUnit.SECONDS)
-            .readTimeout(readTimeoutSeconds.toLong(), TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .build()
+    data class StreamResult(
+        val totalDuration: Long? = null,
+        val evalCount: Int? = null
+    )
 
+    /**
+     * Streams chat directly, calling onToken for each token and returning
+     * metadata on completion. Runs blocking on the caller's thread — call
+     * from Dispatchers.IO.
+     */
+    fun streamBlocking(
+        baseUrl: String,
+        request: OllamaChatRequest,
+        onToken: (String) -> Unit,
+        connectTimeout: Int = 10,
+        readTimeout: Int = 120
+    ): StreamResult {
+        val client = getClient(connectTimeout, readTimeout)
         val url = baseUrl.trimEnd('/') + "/api/chat"
         val json = gson.toJson(request)
         val body = json.toRequestBody("application/json".toMediaType())
@@ -41,80 +57,110 @@ class StreamingChatClient(
             .post(body)
             .build()
 
-        var call: Call? = null
+        val call = client.newCall(httpRequest)
+        val response = call.execute()
+
+        if (!response.isSuccessful) {
+            val errorBody = response.body?.string() ?: "Unknown error"
+            response.close()
+            throw IOException("HTTP ${response.code}: $errorBody")
+        }
+
+        val responseBody = response.body ?: throw IOException("Empty response body")
+        var evalCount: Int? = null
+        var totalDuration: Long? = null
 
         try {
-            call = client.newCall(httpRequest)
+            // Use Okio BufferedSource directly — no InputStream/Reader wrapping
+            val source = responseBody.source()
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (line.isBlank()) continue
 
-            val response = withContext(Dispatchers.IO) {
-                call.execute()
-            }
-
-            if (!response.isSuccessful) {
-                val errorBody = withContext(Dispatchers.IO) {
-                    response.body?.string() ?: "Unknown error"
+                // Check for done FIRST (avoids unnecessary content extraction)
+                if (line.contains("\"done\":true")) {
+                    // Parse final stats with Gson only once at the end
+                    try {
+                        evalCount = extractInt(line, "\"eval_count\":")
+                        totalDuration = extractLong(line, "\"total_duration\":")
+                    } catch (_: Exception) {}
+                    break
                 }
-                trySend(StreamEvent.Error("HTTP ${response.code}: $errorBody"))
-                close()
-                return@callbackFlow
-            }
 
-            val responseBody = response.body
-            if (responseBody == null) {
-                trySend(StreamEvent.Error("Empty response body"))
-                close()
-                return@callbackFlow
-            }
-
-            withContext(Dispatchers.IO) {
-                val reader = BufferedReader(InputStreamReader(responseBody.byteStream()))
-                try {
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        if (line.isNullOrBlank()) continue
-                        try {
-                            val chatResponse = gson.fromJson(line, OllamaChatResponse::class.java)
-                            if (chatResponse.done) {
-                                trySend(StreamEvent.Done(chatResponse))
-                            } else {
-                                val token = chatResponse.message?.content ?: ""
-                                if (token.isNotEmpty()) {
-                                    trySend(StreamEvent.Token(token))
-                                }
-                            }
-                        } catch (e: Exception) {
-                            // Skip malformed lines
-                        }
-                    }
-                } catch (e: IOException) {
-                    if (call?.isCanceled() != true) {
-                        trySend(StreamEvent.Error("Stream interrupted: ${e.message}"))
-                    }
-                } finally {
-                    reader.close()
-                    responseBody.close()
+                // Fast manual extraction of content field — no Gson reflection
+                val token = extractContent(line)
+                if (token != null && token.isNotEmpty()) {
+                    onToken(token)
                 }
             }
-
-            close()
-        } catch (e: IOException) {
-            if (call?.isCanceled() != true) {
-                trySend(StreamEvent.Error("Connection failed: ${e.message}"))
-            }
-            close()
-        } catch (e: Exception) {
-            trySend(StreamEvent.Error("Unexpected error: ${e.message}"))
-            close()
+        } finally {
+            responseBody.close()
         }
 
-        awaitClose {
-            call?.cancel()
-        }
+        return StreamResult(totalDuration = totalDuration, evalCount = evalCount)
+    }
+
+    fun cancelAll() {
+        sharedClient?.dispatcher?.cancelAll()
     }
 }
 
-sealed class StreamEvent {
-    data class Token(val text: String) : StreamEvent()
-    data class Done(val response: OllamaChatResponse) : StreamEvent()
-    data class Error(val message: String) : StreamEvent()
+// --- Fast JSON field extraction (no reflection, no object allocation) ---
+
+internal fun extractContent(json: String): String? {
+    // Find "content":" and extract the string value with escape handling
+    val key = "\"content\":\""
+    val start = json.indexOf(key)
+    if (start == -1) return null
+    val contentStart = start + key.length
+    val sb = StringBuilder()
+    var i = contentStart
+    while (i < json.length) {
+        val c = json[i]
+        if (c == '\\' && i + 1 < json.length) {
+            when (json[i + 1]) {
+                '"' -> { sb.append('"'); i += 2 }
+                '\\' -> { sb.append('\\'); i += 2 }
+                'n' -> { sb.append('\n'); i += 2 }
+                't' -> { sb.append('\t'); i += 2 }
+                'r' -> { sb.append('\r'); i += 2 }
+                '/' -> { sb.append('/'); i += 2 }
+                'u' -> {
+                    // Unicode escape \uXXXX
+                    if (i + 5 < json.length) {
+                        try {
+                            val hex = json.substring(i + 2, i + 6)
+                            sb.append(hex.toInt(16).toChar())
+                            i += 6
+                        } catch (_: Exception) { sb.append(c); i++ }
+                    } else { sb.append(c); i++ }
+                }
+                else -> { sb.append(c); i++ }
+            }
+        } else if (c == '"') {
+            break
+        } else {
+            sb.append(c)
+            i++
+        }
+    }
+    return sb.toString()
+}
+
+internal fun extractInt(json: String, key: String): Int? {
+    val start = json.indexOf(key)
+    if (start == -1) return null
+    val numStart = start + key.length
+    val numEnd = json.indexOfAny(charArrayOf(',', '}', ' '), numStart)
+    if (numEnd == -1) return null
+    return json.substring(numStart, numEnd).trim().toIntOrNull()
+}
+
+internal fun extractLong(json: String, key: String): Long? {
+    val start = json.indexOf(key)
+    if (start == -1) return null
+    val numStart = start + key.length
+    val numEnd = json.indexOfAny(charArrayOf(',', '}', ' '), numStart)
+    if (numEnd == -1) return null
+    return json.substring(numStart, numEnd).trim().toLongOrNull()
 }

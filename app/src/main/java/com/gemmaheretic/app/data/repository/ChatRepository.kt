@@ -8,8 +8,6 @@ import com.gemmaheretic.app.domain.model.ChatMessage
 import com.gemmaheretic.app.domain.model.ChatSession
 import com.gemmaheretic.app.domain.model.MessageRole
 import com.gemmaheretic.app.network.api.*
-import com.gemmaheretic.app.network.streaming.StreamEvent
-import com.gemmaheretic.app.network.streaming.StreamingChatClient
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -100,16 +98,6 @@ class ChatRepository(
 
     suspend fun clearChat(sessionId: Long) {
         chatMessageDao.deleteAllMessages(sessionId)
-    }
-
-    fun streamChat(
-        baseUrl: String,
-        request: OllamaChatRequest,
-        connectTimeout: Int = 10,
-        readTimeout: Int = 120
-    ): Flow<StreamEvent> {
-        val client = StreamingChatClient(connectTimeout, readTimeout)
-        return client.streamChat(baseUrl, request)
     }
 
     suspend fun chatNonStreaming(
