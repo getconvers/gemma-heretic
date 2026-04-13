@@ -239,12 +239,18 @@ class ChatViewModel(
 
         streamJob = viewModelScope.launch {
             val contentBuilder = StringBuilder()
+            var lastEmitTime = 0L
 
             chatRepository.streamChat(endpoint.url, request).collect { event ->
                 when (event) {
                     is StreamEvent.Token -> {
                         contentBuilder.append(event.text)
-                        _uiState.update { it.copy(currentStreamContent = contentBuilder.toString()) }
+                        // Throttle UI updates to ~30fps to avoid excessive recomposition
+                        val now = System.currentTimeMillis()
+                        if (now - lastEmitTime > 33) {
+                            _uiState.update { it.copy(currentStreamContent = contentBuilder.toString()) }
+                            lastEmitTime = now
+                        }
                     }
                     is StreamEvent.Done -> {
                         val duration = System.currentTimeMillis() - startTime

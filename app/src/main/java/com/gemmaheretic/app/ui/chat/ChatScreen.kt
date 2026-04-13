@@ -465,7 +465,12 @@ private fun StreamingBubble(
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 if (content.isNotEmpty()) {
-                    MarkdownText(text = content, isDarkTheme = isDarkTheme)
+                    // Plain text during streaming — markdown renders after completion
+                    Text(
+                        text = content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 } else {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
