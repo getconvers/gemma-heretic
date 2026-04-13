@@ -5,10 +5,7 @@ on:
     branches: [ "claude/android-lightweight-gui-app-AOkFK", "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:  # Manual trigger from GitHub UI
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,15 +20,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept Android SDK licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Generate Gradle wrapper
-        run: |
-          gradle wrapper --gradle-version 8.5
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+        run: gradle wrapper --gradle-version 8.5
 
       - name: Build debug APK
         run: ./gradlew assembleDebug
