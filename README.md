@@ -18,30 +18,87 @@ A lightweight native Android GUI for local Ollama instances. Built for users who
 
 ## Setup
 
-### Prerequisites
+### Option 1: GitHub Actions (no local tooling needed)
 
-- Android Studio Hedgehog (2023.1.1) or later
-- JDK 17
-- Android SDK 34
-- An Ollama instance running and accessible
+A CI workflow is included. Every push to the branch automatically builds the APK.
 
-### Build
+1. Push to the repo (or trigger manually from the Actions tab)
+2. Go to **Actions** > latest workflow run > **Artifacts**
+3. Download `gemma-heretic-debug.zip`
+4. Unzip to get `app-debug.apk`
+5. Transfer to your phone and install (enable "Install from unknown sources")
+
+You can also trigger a build manually from the GitHub Actions UI via the **Run workflow** button.
+
+### Option 2: Command-line build (no Android Studio)
+
+You need JDK 17 and the Android SDK command-line tools. No IDE required.
+
+**Install JDK 17:**
+
+```bash
+# macOS (Homebrew)
+brew install openjdk@17
+
+# Ubuntu/Debian
+sudo apt install openjdk-17-jdk
+
+# Arch
+sudo pacman -S jdk17-openjdk
+```
+
+**Install Android SDK command-line tools:**
+
+```bash
+# Download command-line tools from https://developer.android.com/studio#command-line-tools-only
+# Unzip to a directory, e.g. ~/android-sdk
+
+mkdir -p ~/android-sdk/cmdline-tools
+# Move the unzipped contents into ~/android-sdk/cmdline-tools/latest/
+
+# Accept licenses and install required SDK components
+export ANDROID_HOME=~/android-sdk
+export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+
+sdkmanager --licenses
+sdkmanager "platforms;android-34" "build-tools;34.0.0"
+```
+
+**Build:**
 
 ```bash
 git clone <this-repo>
 cd gemma-heretic
+export ANDROID_HOME=~/android-sdk  # or wherever you installed it
+
+# Generate the Gradle wrapper (requires Gradle installed, or use the CI)
+gradle wrapper --gradle-version 8.5
+
+# Build
 ./gradlew assembleDebug
 ```
 
 The APK will be at `app/build/outputs/apk/debug/app-debug.apk`.
 
-### Install
-
+**If you don't have Gradle installed** to generate the wrapper, install it:
 ```bash
-adb install app/build/outputs/apk/debug/app-debug.apk
+# macOS
+brew install gradle
+
+# Ubuntu/Debian (via SDKMAN)
+curl -s "https://get.sdkman.io" | bash
+sdk install gradle 8.5
 ```
 
-Or transfer the APK to your device and install manually.
+### Install on device
+
+```bash
+# Via ADB
+adb install app/build/outputs/apk/debug/app-debug.apk
+
+# Or transfer the APK file to your phone and tap to install
+# (enable "Install from unknown sources" in Android settings)
+```
 
 ## Connecting to Ollama
 
