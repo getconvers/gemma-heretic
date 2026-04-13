@@ -211,22 +211,20 @@ class ChatViewModel(
             }
         }
 
-        // Only include options if at least one is set — avoids sending
-        // an empty options object that could confuse Ollama
-        val hasOptions = listOf(
-            session.temperature, session.topP, session.topK,
-            session.numCtx, session.maxTokens, session.repeatPenalty, session.seed
-        ).any { it != null }
+        // Always send num_ctx (default 2048) to reduce memory pressure on
+        // constrained devices — Ollama defaults to 4096 which uses 72 MiB KV
+        // cache vs 36 MiB at 2048
+        val numCtx = session.numCtx ?: 2048
 
-        val options = if (hasOptions) OllamaOptions(
+        val options = OllamaOptions(
             temperature = session.temperature,
             topP = session.topP,
             topK = session.topK,
-            numCtx = session.numCtx,
+            numCtx = numCtx,
             numPredict = session.maxTokens,
             repeatPenalty = session.repeatPenalty,
             seed = session.seed
-        ) else null
+        )
 
         val request = OllamaChatRequest(
             model = session.modelName,
