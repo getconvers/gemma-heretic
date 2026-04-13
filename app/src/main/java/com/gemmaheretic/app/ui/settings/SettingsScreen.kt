@@ -190,6 +190,7 @@ private fun SectionHeader(title: String) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ThemeSelector(
     selected: String,
